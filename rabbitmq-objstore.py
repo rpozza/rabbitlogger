@@ -303,14 +303,19 @@ class SwiftConsumer(object):
         try:
             #parse and create csv data row
             json_parsed = json.loads(body)
-            data_row = []
-            data_row.append(str(json_parsed['ts']))
+        except Exception, e:
+            print "Error Processing:" + str(e)
+
+        data_row = []
+        data_row.append(str(json_parsed['ts']))
+        try:
             for i in json_parsed['val']['resources']:
                 if i['id'] == 5700 or i['id'] == 5547:
                     data_row.append(str(json_parsed['ep'] + json_parsed['pth'] + "/" + str(i['id'])))
                     data_row.append(str(i['value']))
         except Exception, e:
             print "Error Processing:" + str(e)
+            return
 
         try:
             #convert timestamp
@@ -318,28 +323,24 @@ class SwiftConsumer(object):
         except ValueError:
             timestamped = datetime.datetime.strptime(str(json_parsed['ts']), "%Y-%m-%dT%H:%M:%SZ")
 
-        try:
-            # look if file exist locally
-            suffix = ((timestamped.hour * 60) + timestamped.minute) // self.FILE_WINDOWSIZE
-            pathname = str(self.CONTAINER) + "/" + str(timestamped.year) + "-" + str(timestamped.month) + "-" + str(timestamped.day)
-            objname = str(timestamped.year) + "-" + str(timestamped.month) + "-" + str(timestamped.day) + "-" + str(suffix) + ".csv"
-        except Exception, e:
-            print "Error Processing:" + str(e)
 
+        # look if file exist locally
+        suffix = ((timestamped.hour * 60) + timestamped.minute) // self.FILE_WINDOWSIZE
+        pathname = str(self.CONTAINER) + "/" + str(timestamped.year) + "-" + str(timestamped.month) + "-" + str(timestamped.day)
+        objname = str(timestamped.year) + "-" + str(timestamped.month) + "-" + str(timestamped.day) + "-" + str(suffix) + ".csv"
         if not os.path.exists("/tmp/" + objname):
             # new file!! record the previous one if exists locally
             if self.PREV_OBJNAME is not None:
                 if os.path.exists("/tmp/" + self.PREV_OBJNAME):
-                    try:
-                        filename = open("/tmp/" + self.PREV_OBJNAME, "r")
-                        self._swift.put_object(self.PREV_PATHNAME, self.PREV_OBJNAME, contents=filename, content_type='text/plain')
-                        filename.close()
-                        os.remove("/tmp/" + self.PREV_OBJNAME) # upload and delete locally
-                    except Exception, e:
-                        print "Error Processing:" + str(e)
+                    print "Record previous file in swift and delete"
+                    filename = open("/tmp/" + self.PREV_OBJNAME, "r")
+                    self._swift.put_object(self.PREV_PATHNAME, self.PREV_OBJNAME, contents=filename, content_type='text/plain')
+                    filename.close()
+                    os.remove("/tmp/" + self.PREV_OBJNAME) # upload and delete locally
             # look if file exist in the cloud
             try:
                 resp_headers = self._swift.head_object(pathname, objname)
+                print "Recover previous file from swift and update"
                 # not local, but in the cloud, recover and add new data
                 resp_headers, obj_contents = self._swift.get_object(pathname, objname)
                 filename = open("/tmp/" + objname, 'w')
@@ -347,24 +348,22 @@ class SwiftConsumer(object):
                 filename.close()
             except swiftclient.ClientException as e:
                 if e.http_status == 404:
+                    print "Created new local files and in swift"
                     # create local file and upload
                     filename = open("/tmp/" + objname, "w")
                     filename.close()
                     filename = open("/tmp/" + objname, "r")
                     self._swift.put_object(pathname, objname, contents=filename, content_type='text/plain')
                     filename.close()
-        try:
-            # now file exists, add data
-            filename = open("/tmp/" + objname, "a")
-            fw = csv.writer(filename)
-            fw.writerow(data_row)
-            filename.close()
-            # save previous objectname and pathname
-            self.PREV_PATHNAME = pathname
-            self.PREV_OBJNAME = objname
-        except Exception, e:
-            print "Error Processing:" + str(e)
 
+        # now file exists, add data
+        filename = open("/tmp/" + objname, "a")
+        fw = csv.writer(filename)
+        fw.writerow(data_row)
+        filename.close()
+        # save previous objectname and pathname
+        self.PREV_PATHNAME = pathname
+        self.PREV_OBJNAME = objname
         self.acknowledge_message(basic_deliver.delivery_tag)
 
     def acknowledge_message(self, delivery_tag):
